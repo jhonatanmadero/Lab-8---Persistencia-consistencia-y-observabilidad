@@ -42,6 +42,22 @@ Los experimentos se repitieron en una segunda ventana para tomar capturas PNG co
 
 Un 409 o un 503 esperado no es una caída: el servidor respondió y aplicó la regla de negocio. El 409 evita una edición perdida; el 503 evita escribir con un permiso que no se pudo verificar.
 
+## Preguntas de los fallos controlados (Bloque C)
+
+**¿Qué funcionalidad degradó de forma controlada?**
+La **presencia**. Con Redis detenido, el heartbeat respondió HTTP 200 con `{"available":false,"ttl_seconds":null}`: el sistema informa que no pudo registrar la presencia, en vez de fingir que la registró o de fallar con 503. La métrica `lab_degraded_total{feature="presence"}` subió (capturas 03 y 06). La caché de permisos de la interfaz también se degrada: con Redis caído cuenta un `error` y consulta directamente a Gestión. Mientras tanto, la edición siguió con 200 (captura 04), porque Redis no participa en la garantía de escritura.
+
+**¿Cuál dejó de estar disponible deliberadamente?**
+La **edición del tablero** cuando Gestión (la autoridad de permisos) no responde. El PUT respondió **503** "No se puede validar el permiso; escritura no autorizada" aunque había un permiso `can_edit:true` en caché (captura 05). Es una decisión de *fail closed*: preferimos no aceptar escrituras antes que aceptarlas con una concesión que quizás ya fue revocada. La lectura del tablero (GET) siguió disponible.
+
+**¿Qué garantía protege ese comportamiento?**
+- Para la escritura: **solo la autoridad durable (PostgreSQL vía Gestión) puede autorizar**. `permission_for_write` llama a `authoritative_permission` y deja propagar su 503; nunca convierte un error en permiso concedido. Así, una escritura que comienza después de confirmada una revocación recibe 403, y sin autoridad recibe 503, nunca 200.
+- Para la presencia: Redis se trata como **capacidad opcional**. `touch_presence` captura solo `RedisError` y devuelve `False`, así que una falla de Redis no se propaga al flujo principal y tampoco se informa una presencia que no existe.
+- Para el contenido: el **control optimista de versión** sigue vigente en cualquier escenario, porque está en la misma operación atómica de MongoDB.
+
+**¿Qué cambia si la falla es MongoDB?**
+MongoDB es la **fuente de verdad del contenido**, así que no hay degradación posible para el tablero: lectura y edición responden **503** "MongoDB no disponible" (el código captura `PyMongoError`). El cliente tiene `serverSelectionTimeoutMS=1500`, así que cada petición espera hasta ≈1,5 s antes del 503; eso subiría el P95 y la tasa de 5xx en el dashboard, y `lab_dependency_up{dependency="mongo"}` bajaría a 0. La presencia (Redis) y la consulta de permisos (Gestión/PostgreSQL) seguirían funcionando, pero sin contenido no hay nada útil que editar. A diferencia de Redis, aquí no se puede degradar de forma útil: perder la fuente de verdad implica perder la funcionalidad. *Esta respuesta se basa en el código del servicio; no se ejecutó un experimento con MongoDB detenido.*
+
 ## Observabilidad
 
 Dashboard exportado en `entrega/dashboard.json` (uid `arsw-eqp-persistencia`, 8 paneles). Valores observados en Prometheus en la ventana 12:41–12:56 UTC:

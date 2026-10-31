@@ -1,0 +1,22 @@
+13:44:27Z == experimento 1: dos pestañas ==
+13:44:28Z docker compose run --rm tools reset -> exit 0
+13:44:29Z cargar versión: HTTP 200 · GET /api/boards/board-1 | {   "id": "board-1",   "title": "Tablero ARSW",   "version": 1,   "preferences": {     "background": "white"   } }
+13:44:30Z cargar versión: HTTP 200 · GET /api/boards/board-1 | {   "id": "board-1",   "title": "Tablero ARSW",   "version": 1,   "preferences": {     "background": "white"   } }
+13:44:33Z 01-dos-pestanas-ana-200.png: HTTP 200 · PUT /api/boards/board-1 | {   "id": "board-1",   "title": "Cambio de Ana (pestaña 1)",   "version": 2,   "preferences": {     "background": "white"   } }
+13:44:35Z 02-dos-pestanas-luis-409.png: HTTP 409 · PUT /api/boards/board-1 | {   "detail": "Versión obsoleta o tablero inexistente: recargue antes de editar" }
+13:44:35Z == experimento 2: redis detenido ==
+13:44:37Z docker compose run --rm tools reset -> exit 0
+13:44:38Z docker compose stop redis -> exit 0
+13:44:38Z cargar versión: HTTP 200 · GET /api/boards/board-1 | {   "id": "board-1",   "title": "Tablero ARSW",   "version": 1,   "preferences": {     "background": "white"   } }
+13:44:45Z 03-redis-caido-presencia-degradada.png: HTTP 200 · POST /api/presence/board-1 | {   "available": false,   "ttl_seconds": null }
+13:44:50Z 04-redis-caido-edicion-200.png: HTTP 200 · PUT /api/boards/board-1 | {   "id": "board-1",   "title": "Edición con Redis detenido",   "version": 2,   "preferences": {     "background": "white"   } }
+13:44:54Z docker compose start redis -> exit 0
+13:45:00Z == experimento 3: autoridad detenida con permiso en caché ==
+13:45:01Z cargar versión: HTTP 200 · GET /api/boards/board-1 | {   "id": "board-1",   "title": "Edición con Redis detenido",   "version": 2,   "preferences": {     "background": "white"   } }
+13:45:04Z permiso primado en caché: HTTP 200 · GET /api/permissions/board-1 | {   "can_edit": true,   "source": "cache-or-management",   "ttl_seconds": 60 }
+13:45:07Z permiso desde caché (hit): HTTP 200 · GET /api/permissions/board-1 | {   "can_edit": true,   "source": "cache-or-management",   "ttl_seconds": 60 }
+13:45:08Z docker compose stop management -> exit 0
+13:45:15Z 05-autoridad-caida-503.png: HTTP 503 · PUT /api/boards/board-1 | {   "detail": "No se puede validar el permiso; escritura no autorizada" }
+13:45:18Z docker compose start management -> exit 0
+13:45:27Z docker compose restart frontend -> exit 0
+13:45:30Z docker compose up -d --wait --wait-timeout 120 -> exit 0
