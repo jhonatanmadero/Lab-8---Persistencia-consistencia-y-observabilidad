@@ -6,22 +6,25 @@ from pymongo import ReturnDocument
 from redis.exceptions import RedisError
 
 def save_board(collection, board_id, expected_version, title):
-    # TODO 1: incluir la versión esperada en el filtro de la misma operación.
-    # Debe retornar None si otro usuario ya cambió esa versión; no hacer find+update.
+    # Control optimista: la comparación de versión y el incremento ocurren en una sola
+    # operación atómica de MongoDB. Una versión obsoleta no coincide -> None (409).
     return collection.find_one_and_update(
-        {'_id': board_id},
+        {'_id': board_id, 'version': expected_version},
         {'$set': {'title': title}, '$inc': {'version': 1}},
         return_document=ReturnDocument.AFTER,
     )
 
 def permission_for_write(user, board_id, cached_permission, authoritative_permission):
-    # TODO 2: una concesión en caché no prueba que siga vigente.
-    # Elegir la fuente para escrituras críticas. Ambas funciones reciben user, board_id.
-    # Si la fuente autoritativa falla, dejar propagar el error: la API lo convierte a 503.
-    return cached_permission(user, board_id)
+    # Una concesión en caché no prueba que siga vigente: las escrituras consultan siempre
+    # la autoridad (Gestión/PostgreSQL). Su 503 se propaga a propósito para no escribir
+    # con una concesión vieja. La caché queda solo para la lectura de la interfaz.
+    return authoritative_permission(user, board_id)
 
 def touch_presence(client, key, ttl):
-    # TODO 3: usar TTL en la misma escritura. Si Redis falla, retornar False.
-    # True = presencia registrada; False = capacidad temporal no disponible.
-    client.set(key, 'online')
+    # Valor y expiración en un único SET (EX); cada heartbeat renueva el TTL.
+    # Si Redis falla, solo se degrada la presencia: se informa False sin romper la petición.
+    try:
+        client.set(key, 'online', ex=ttl)
+    except RedisError:
+        return False
     return True
