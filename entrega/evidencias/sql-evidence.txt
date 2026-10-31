@@ -1,0 +1,38 @@
+SELECT 'ANTES' AS etapa, * FROM memberships WHERE user_id='luis';
+ etapa | board_id | user_id | can_edit 
+-------+----------+---------+----------
+ ANTES | board-1  | luis    | t
+(1 row)
+
+BEGIN;
+BEGIN
+UPDATE memberships SET can_edit=false WHERE board_id='board-1' AND user_id='luis';
+UPDATE 1
+SELECT 'DENTRO DE TRANSACCION' AS etapa, * FROM memberships WHERE user_id='luis';
+         etapa         | board_id | user_id | can_edit 
+-----------------------+----------+---------+----------
+ DENTRO DE TRANSACCION | board-1  | luis    | f
+(1 row)
+
+ROLLBACK;
+ROLLBACK
+SELECT 'DESPUES DE ROLLBACK' AS etapa, * FROM memberships WHERE user_id='luis';
+        etapa        | board_id | user_id | can_edit 
+---------------------+----------+---------+----------
+ DESPUES DE ROLLBACK | board-1  | luis    | t
+(1 row)
+
+BEGIN;
+BEGIN
+INSERT INTO memberships VALUES ('board-1','ana',true);
+psql:/lab/evidence.sql:9: ERROR:  duplicate key value violates unique constraint "memberships_pkey"
+DETAIL:  Key (board_id, user_id)=(board-1, ana) already exists.
+ROLLBACK;
+ROLLBACK
+BEGIN;
+BEGIN
+INSERT INTO memberships VALUES ('board-1','usuario-inexistente',true);
+psql:/lab/evidence.sql:13: ERROR:  insert or update on table "memberships" violates foreign key constraint "memberships_user_id_fkey"
+DETAIL:  Key (user_id)=(usuario-inexistente) is not present in table "users".
+ROLLBACK;
+ROLLBACK

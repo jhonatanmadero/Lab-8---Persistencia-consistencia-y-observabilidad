@@ -1,14 +1,29 @@
 # Matriz de decisiones · ARSW-EQP-__
 
-Integrantes:
+Integrantes: Jhonatan Madero, Jhonatan Peña, Juan Murcia
 
 | Dato | Motor elegido | Consulta principal | Qué debe ser atómico | Atraso tolerable | Retención / TTL | Consecuencia de perderlo | Alternativa y costo |
 |---|---|---|---|---|---|---|---|
-| Membresías y permisos | | | | | | | |
-| Contenido del tablero | | | | | | | |
-| Preferencias | | | | | | | |
-| Historial creciente (diseño) | | | | | | | |
-| Presencia | | | | | | | |
-| Caché de permisos | | | | | | | |
+| Membresías y permisos | PostgreSQL (servicio Gestión) | `SELECT can_edit FROM memberships WHERE board_id=$1 AND user_id=$2` (por PK compuesta) | Conceder/revocar una membresía; la existencia de usuario y tablero referenciados (FK) y la unicidad `(board_id, user_id)` (PK) | **Cero** para autorizar escrituras: una revocación confirmada debe verse en la siguiente escritura | Permanente mientras exista la relación | Crítica: se autorizan escrituras de usuarios revocados o se bloquea a usuarios legítimos | MongoDB con membresías embebidas en el tablero: se pierden FK y unicidad declarativa; la integridad pasaría a código de aplicación |
+| Contenido del tablero | MongoDB (servicio Contenido), colección `documents` | `findOne({_id})` para leer; `findOneAndUpdate({_id, version}, {$set, $inc})` para editar | Comparar versión + escribir título + incrementar versión, en **una sola operación** sobre un documento | Lecturas: tolerable unos segundos (GET público). Escrituras: ninguna edición puede pisar otra (control optimista) | Permanente | Crítica: pérdida de trabajo del usuario o ediciones perdidas silenciosas | PostgreSQL con JSONB y `UPDATE … WHERE id=$1 AND version=$2`: misma garantía, y además permitiría validar permiso y escribir en una sola transacción; costo: acoplar Contenido a la base de Gestión |
+| Preferencias | MongoDB, **embebidas** en el documento del tablero | Se leen junto con el tablero en el mismo `findOne` | Junto con el documento (atomicidad por documento) | Tolerable (dato cosmético) | Vida del tablero | Baja: se vuelve al valor por defecto | Colección separada: una consulta extra por lectura sin beneficio; tiene sentido solo si fueran preferencias por usuario y crecieran |
+| Historial creciente (diseño) | MongoDB, **colección separada** `board_history` (no embebido) | `find({board_id}).sort({ts:-1, _id:-1}).limit(N)` con paginación por cursor `(ts, _id)`; índice `{board_id:1, ts:-1, _id:-1}` | Cada entrada es un insert independiente; no necesita atomicidad con otras entradas | Tolerable (segundos): es consulta de auditoría, no camino crítico | Política de retención (p. ej. 90 días con índice TTL, o archivado) | Media: se pierde trazabilidad, no el estado actual | Embebido en el documento: crece sin límite hacia el máximo de 16 MB por documento, cada lectura del tablero arrastra todo el historial y cada edición reescribe un documento cada vez mayor |
+| Presencia | Redis, clave `presence:{board}:{user}` | `SET key online EX 20` (heartbeat) y `SCAN`/`EXISTS` para listar | Valor + expiración en un único `SET … EX` | Alta: es aproximada por naturaleza | **TTL 20 s**, renovado en cada heartbeat | Baja: se muestra "presencia no disponible"; el contenido sigue funcionando | Guardarla en MongoDB/PostgreSQL: escrituras frecuentes sobre datos durables que no necesitan durabilidad, y limpieza manual de entradas viejas |
+| Caché de permisos | Redis, clave `permission:{board}:{user}` | `GET` para la interfaz (consultar si mostrar el botón de editar) | Nada crítico: es una copia derivada | Hasta 60 s **solo para la interfaz**; nunca para autorizar escrituras | **TTL 60 s** | Ninguna para la corrección: se consulta la autoridad (miss) | Eliminar la caché: más carga sobre Gestión en cada consulta de UI, pero ningún riesgo de corrección; Redis aquí es optimización, no fuente de verdad |
 
-Explique por qué la distribución inicial es apropiada o qué cambiaría. No basta escribir «SQL estructurado / NoSQL flexible».
+## Justificación de la distribución
+
+La distribución inicial es apropiada, con una aclaración clave sobre el rol de Redis:
+
+1. **PostgreSQL para membresías** porque el dato es relacional (usuario ↔ tablero) y su corrección depende de restricciones que el motor garantiza declarativamente: la PK compuesta impide membresías duplicadas y las FK impiden membresías huérfanas (ver `entrega/evidencias/sql-evidence.txt`: ambos `INSERT` fallan y la revocación se revierte con `ROLLBACK`). Es la **fuente de autoridad** para escribir.
+2. **MongoDB para el contenido** porque la operación principal es leer y reemplazar un agregado completo (título + preferencias + versión), y MongoDB garantiza atomicidad a nivel de documento. Con `findOneAndUpdate` condicionado por versión se obtiene control optimista sin transacciones multi-documento.
+3. **Redis solo para datos efímeros o derivados**: presencia (TTL nativo) y caché de permisos. Ninguno de los dos es fuente de verdad; por eso su caída degrada la presencia y vuelve más lenta la UI, pero no bloquea ediciones ni autoriza indebidamente.
+
+**Qué cambiaríamos en un sistema real:** evaluaríamos mover el contenido a PostgreSQL con JSONB. Así la validación de permiso y la escritura podrían ocurrir en una misma transacción y se cerraría la ventana de revocación concurrente descrita en el ADR. El costo es acoplar los dos servicios a una misma base (o fusionarlos) y perder la independencia de despliegue y escalamiento.
+
+### Preguntas integradas
+
+- **¿Qué gana y qué cuesta embeber preferencias?** Gana una sola lectura y atomicidad junto con el contenido. Cuesta que cualquier cambio de preferencias compita por la misma versión que el título (un cambio de fondo puede generar 409 a quien edita el título) y que no escale si fueran por usuario.
+- **¿Qué ocurre si el historial crece sin límite?** El documento se acerca al límite de 16 MB, cada lectura y escritura mueve más bytes y la latencia crece con la antigüedad del tablero. Por eso va en colección separada y paginada.
+- **¿Podría PostgreSQL resolver también el documento?** Sí: JSONB + columna `version` + `UPDATE … WHERE version = $n` da la misma garantía. Ver alternativa en el ADR.
+- **¿Por qué no guardar permisos únicamente en Redis?** Redis aquí no tiene persistencia (`--save ""`, sin AOF), no tiene FK ni unicidad relacional, y una caché con TTL puede seguir concediendo un permiso ya revocado. La autoridad debe ser durable y consistente.
