@@ -1,4 +1,4 @@
-# Evidencias · ARSW-EQP-__
+# Evidencias · ARSW-EQP-07
 
 ## Entorno
 
@@ -23,7 +23,24 @@ Todas las horas están en **UTC** del 2026-10-31. Para los resultados de `tools`
 | Carga k6 | 12:53:01 – 12:54:51 UTC | `evidencias/k6-carga-summary-solucion.json` | 1974 req (19,7 req/s), `http_req_failed` 0 %, checks 100 %, P95 cliente **11,4 ms**, máx. 37,5 ms | Umbrales de clase cumplidos (P95 < 500 ms, errores < 1 %). Solo hay una medición, con la solución: la carga es de solo lectura y no se conservó una corrida con el código base |
 | Eventos para paneles | 12:55:11 – 12:55:37 UTC | Dashboard (captura) | Dos PUT con versión 1 → 200 y 409; 3 consultas de permiso; 3 heartbeats con Redis detenido → `available:false`; Redis restaurado (`PONG`) | Generan muestras para los paneles de conflictos, caché y presencia degradada |
 
-**Capturas:** _(agregar capturas del dashboard "ARSW-EQP-XX · Persistencia" con la ventana horaria visible, cubriendo 12:49–12:56 UTC)_
+### Segunda ventana con capturas · 13:38 – 13:47 UTC (08:38 – 08:47 hora de Colombia)
+
+Los experimentos se repitieron en una segunda ventana para tomar capturas PNG con la hora visible. Las capturas se tomaron con Microsoft Edge (headless, mediante Playwright) en zona horaria `America/Bogota`. El registro de cada acción y su respuesta está en `evidencias/capturas/registro-capturas.txt`.
+
+| Experimento | Inicio / fin (UTC) | Archivo / captura | Resultado observado |
+|---|---|---|---|
+| Redis detenido (prueba automatizada) | ≈13:38:36 – 13:38:50 | `evidencias/redis-down-20261031T133849954175Z.json` | `degradacion_redis` true |
+| Autoridad detenida (prueba automatizada) | ≈13:39:00 – 13:39:10 | `evidencias/authority-down-20261031T133909921367Z.json` | `autoridad_no_disponible` true |
+| Acceptance después de restaurar | ≈13:39:30 – 13:39:48 | `evidencias/acceptance-20261031T133948069760Z.json` | cuatro escenarios en true |
+| Carga k6 | 13:39:48 – 13:41:30 | `evidencias/k6-carga-summary-capturas.json` | 1966 req (19,7 req/s), 0 % errores, checks 100 %, P95 cliente **11,5 ms** |
+| Exp. 1 · dos pestañas | 13:44:28 – 13:44:35 | `capturas/01-dos-pestanas-ana-200.png`, `capturas/02-dos-pestanas-luis-409.png` | Ana (pestaña 1) guarda: **200**, versión 1 → 2. Luis (pestaña 2, aún con versión 1): **409** "Versión obsoleta… recargue antes de editar" |
+| Exp. 2 · Redis detenido en el frontend | 13:44:38 – 13:44:54 | `capturas/03-redis-caido-presencia-degradada.png`, `capturas/04-redis-caido-edicion-200.png` | Presencia: **200** `{"available":false,"ttl_seconds":null}`. Edición: **200**, versión 2 |
+| Exp. 3 · autoridad detenida con permiso en caché | 13:45:01 – 13:45:18 | `capturas/05-autoridad-caida-503.png` | Permiso consultado dos veces (`can_edit:true`, en caché). Con Gestión detenida, el PUT responde **503** "No se puede validar el permiso; escritura no autorizada" |
+| Acceptance final | ≈13:45:45 – 13:46:02 | `evidencias/acceptance-20261031T134602356463Z.json` | cuatro escenarios en true; `redis-cli ping` → `PONG` |
+| Dashboard | captura 13:46:52 (últimos 30 min) | `capturas/06-grafana-dashboard-completo.png` | Los 8 paneles con datos (ver abajo) |
+| Targets de Prometheus | 13:46:52 | `capturas/07-prometheus-targets.png` | content y management **UP** tras la restauración |
+
+Un 409 o un 503 esperado no es una caída: el servidor respondió y aplicó la regla de negocio. El 409 evita una edición perdida; el 503 evita escribir con un permiso que no se pudo verificar.
 
 ## Observabilidad
 
@@ -40,6 +57,19 @@ Dashboard exportado en `entrega/dashboard.json` (uid `arsw-eqp-persistencia`, 8 
 | Conflictos | > 0 tras el PUT con versión obsoleta |
 | Presencia degradada | > 0 tras los heartbeats con Redis detenido |
 
+En la segunda ventana (captura `06-grafana-dashboard-completo.png`, 08:17–08:47 hora de Colombia):
+
+| Panel | Observación |
+|---|---|
+| `up` | Dos caídas breves a 0 de management (≈08:39 y ≈08:45), justo cuando se detuvo para el experimento de autoridad |
+| Solicitudes/s | Pico ≈ 24 req/s en content durante k6 (08:40–08:41) |
+| P95 backend | Picos ≈ 4 s durante los experimentos de falla: con Redis detenido, cada operación espera el timeout del cliente Redis (0,3 s), y con Gestión detenida la validación de permiso espera el timeout HTTP de 2 s (`httpx`, `timeout=2`). Como esas latencias caen en el bucket 2–5 s, `histogram_quantile` interpola ≈ 4 s. Durante k6, con todo sano, vuelve a valores bajos. Fallar cerrado tiene un costo de latencia, no solo de disponibilidad |
+| Errores 5xx | **Visibles**: ≈ 0,036 req/s (≈08:39) y ≈ 0,018 req/s (≈08:45), que corresponden a los 503 deliberados sin autoridad |
+| Dependencias | `content → redis` y `content → management` bajan a 0 en sus experimentos; mongo y postgres se mantienen en 1 |
+| Aciertos de caché | Sube hasta 100 % al repetir consultas de permiso dentro del TTL de 60 s |
+| Conflictos | Picos ≈ 0,02–0,035/s tras los 409 de acceptance y de las dos pestañas |
+| Presencia degradada | Picos con Redis detenido, aunque las respuestas fueron HTTP 200 |
+
 **1. ¿Por qué puede subir el contador de conflictos mientras baja la pérdida de cambios?**
 Porque el 409 **es** el mecanismo que evita la pérdida. Antes, la segunda edición sobrescribía a la primera en silencio, sin conflictos registrados y con una edición perdida. Ahora el filtro por versión detecta la carrera, rechaza la escritura obsoleta y cuenta un conflicto. Más conflictos bajo concurrencia significan más pérdidas evitadas, no una falla del servidor.
 
@@ -54,6 +84,6 @@ Miden cosas distintas con instrumentos distintos. k6 mide el recorrido completo 
 
 ## Problemas pendientes
 
-- **Panel de 5xx en 0 a pesar del 503 de `authority-down`:** la serie `status="503"` existe, pero `rate()` no muestra el incremento. Cuando un contador con una combinación de labels nueva aparece por primera vez con valor 1, Prometheus no tiene una muestra previa, así que `rate`/`increase` no cuentan ese primer evento. No es evidencia de ausencia de errores: el 503 está registrado en `authority-down-*.json`. Para verlo en el panel habría que provocar varios 503 seguidos o inicializar las series en 0 al arrancar el servicio.
+- **Panel de 5xx en 0 en la primera ventana a pesar del 503 de `authority-down`:** cuando un contador con una combinación de labels nueva aparece por primera vez con valor 1, Prometheus no tiene una muestra previa, así que `rate`/`increase` no cuentan ese primer evento. En la segunda ventana la serie `status="503"` ya existía y el panel **sí** muestra los 503 (captura 06), lo que confirma la explicación. La ausencia de muestras no es evidencia de ausencia de errores. Una mejora sería inicializar las series en 0 al arrancar el servicio.
 - **Sin k6 del código base:** solo existe la medición con la solución. No se reporta una comparación inventada.
 - **Ventana de revocación concurrente:** no está cubierta por las pruebas (ver ADR-001, Consecuencias).

@@ -1,4 +1,4 @@
-# Matriz de decisiones · ARSW-EQP-__
+# Matriz de decisiones · ARSW-EQP-07
 
 Integrantes: Jhonatan Madero, Jhonatan Peña, Juan Murcia
 
